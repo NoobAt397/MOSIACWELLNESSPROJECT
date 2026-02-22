@@ -43,6 +43,7 @@ export function analyzeInvoice(
 ): AnalysisResult {
   const discrepancies: Discrepancy[] = []
   let totalBilled = 0
+  const seenAWBs = new Set<string>()
 
   for (const row of csvData) {
     const awb: string = row.AWB
@@ -55,6 +56,19 @@ export function analyzeInvoice(
 
     totalBilled += totalBilledAmount
 
+    // ── Duplicate charge detection ──
+    if (seenAWBs.has(awb)) {
+      discrepancies.push({
+        awb_number: awb,
+        issue_type: "Duplicate Charge",
+        billed_amount: totalBilledAmount,
+        correct_amount: 0,
+        difference: Number(totalBilledAmount.toFixed(2)),
+      })
+      continue
+    }
+    seenAWBs.add(awb)
+
     // Determine base rate from the actual zone
     const rateKey = ZONE_RATE_MAP[actualZone]
     const baseRate: number = rateKey ? contractRules[rateKey] : 0
@@ -62,9 +76,12 @@ export function analyzeInvoice(
     // Expected freight using the billed weight (carrier charges by billed weight)
     const expectedFreight = baseRate * billedWeight
 
-    // Expected total including COD fee if applicable
+    // Expected total: RTO/Return uses a flat fee; COD adds a percentage; Prepaid is base only
+    const isRTO = orderType === "RTO" || orderType === "Return"
     let expectedTotal: number
-    if (orderType === "COD") {
+    if (isRTO) {
+      expectedTotal = contractRules.rto_flat_fee
+    } else if (orderType === "COD") {
       expectedTotal =
         expectedFreight + (expectedFreight * contractRules.cod_fee_percentage) / 100
     } else {
@@ -90,7 +107,20 @@ export function analyzeInvoice(
       reasons.push("Invalid COD Charge")
     }
 
-    // Catch-all if the overcharge doesn't match the specific checks above
+    if (isRTO && totalBilledAmount > contractRules.rto_flat_fee + 1) {
+      reasons.push("RTO Overcharge")
+    }
+
+    // Flag unexplained surcharges: significant overcharge with no zone or weight cause
+    if (
+      difference > 10 &&
+      !reasons.includes("Zone Mismatch") &&
+      !reasons.includes("Weight Overcharge")
+    ) {
+      reasons.push("Non-contracted Surcharge")
+    }
+
+    // Catch-all for small unexplained overcharges (₹1–₹10) not caught above
     if (reasons.length === 0) {
       reasons.push("Rate Overcharge")
     }

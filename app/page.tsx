@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useMemo } from "react"
-import { ChevronDown } from "lucide-react"
+import { ChevronDown, UploadCloud } from "lucide-react"
 import Papa from "papaparse"
 import { PieChart, Pie, Cell, Label } from "recharts"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -27,14 +27,14 @@ import { useToast } from "@/hooks/use-toast"
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const MOCK_CONTRACT = {
-  provider_name: "Delhivery",
-  zone_a_rate: 40,
-  zone_b_rate: 55,
-  zone_c_rate: 75,
-  cod_fee_percentage: 1.5,
-  rto_flat_fee: 30,
-}
+const PROVIDER_CONTRACTS = {
+  Delhivery:       { provider_name: "Delhivery",     zone_a_rate: 40, zone_b_rate: 55, zone_c_rate: 75, cod_fee_percentage: 1.5, rto_flat_fee: 30 },
+  BlueDart:        { provider_name: "BlueDart",       zone_a_rate: 55, zone_b_rate: 72, zone_c_rate: 95, cod_fee_percentage: 2.0, rto_flat_fee: 45 },
+  "Ecom Express":  { provider_name: "Ecom Express",  zone_a_rate: 35, zone_b_rate: 48, zone_c_rate: 65, cod_fee_percentage: 1.2, rto_flat_fee: 25 },
+  Shadowfax:       { provider_name: "Shadowfax",      zone_a_rate: 30, zone_b_rate: 42, zone_c_rate: 58, cod_fee_percentage: 1.0, rto_flat_fee: 20 },
+} as const
+
+type ProviderName = keyof typeof PROVIDER_CONTRACTS
 
 const CHART_PALETTE = [
   "#ef4444", // red-500
@@ -48,6 +48,8 @@ const CHART_PALETTE = [
 
 export default function Home() {
   const { toast } = useToast()
+  const [selectedProvider, setSelectedProvider] = useState<ProviderName>("Delhivery")
+  const activeContract = PROVIDER_CONTRACTS[selectedProvider]
   const [analysisResults, setAnalysisResults] = useState<AnalysisResult | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
   const [fileName, setFileName] = useState<string | null>(null)
@@ -197,7 +199,7 @@ export default function Home() {
           return
         }
 
-        const analysis = analyzeInvoice(normalizedRows as any[], MOCK_CONTRACT)
+        const analysis = analyzeInvoice(normalizedRows as any[], activeContract)
         setAnalysisResults(analysis)
         setIsProcessing(false)
       },
@@ -267,7 +269,7 @@ export default function Home() {
           <p className="text-zinc-500 text-sm pl-5">
             Contract-based invoice auditing for Indian D2C logistics
             &nbsp;·&nbsp;
-            <span className="text-zinc-600">Demo contract: {MOCK_CONTRACT.provider_name}</span>
+            <span className="text-zinc-600">Demo contract: {activeContract.provider_name}</span>
           </p>
         </header>
 
@@ -282,23 +284,38 @@ export default function Home() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+              {/* Dropzone */}
+              <label
+                className="flex flex-col items-center justify-center gap-3 w-full py-8 px-4
+                           rounded-lg border-2 border-dashed border-zinc-700
+                           hover:border-zinc-500 hover:bg-zinc-900/40
+                           cursor-pointer transition-all duration-200 group"
+              >
+                <UploadCloud
+                  className="w-9 h-9 text-zinc-600 group-hover:text-zinc-400 transition-colors duration-200"
+                  strokeWidth={1.5}
+                />
+                <div className="text-center space-y-1">
+                  <p className="text-sm font-medium text-zinc-400 group-hover:text-zinc-300 transition-colors">
+                    {fileName && !isProcessing
+                      ? fileName
+                      : "Click to upload Invoice CSV"}
+                  </p>
+                  <p className="text-[11px] text-zinc-600">
+                    Columns:&nbsp;
+                    <span className="font-mono">
+                      AWB, OrderType, BilledWeight, ActualWeight, BilledZone, ActualZone, TotalBilledAmount
+                    </span>
+                  </p>
+                </div>
                 <Input
                   type="file"
                   accept=".csv"
                   onChange={handleFileUpload}
-                  className="max-w-sm bg-zinc-900 border-zinc-700 text-zinc-300
-                             file:text-zinc-400 file:bg-transparent file:border-0 file:mr-3
-                             file:font-medium cursor-pointer transition-colors
-                             hover:border-red-800 focus:border-red-700 focus:ring-red-900"
+                  className="hidden"
                 />
-                <p className="text-[11px] text-zinc-600 leading-relaxed">
-                  Expected columns:&nbsp;
-                  <span className="font-mono text-zinc-500">
-                    AWB, OrderType, BilledWeight, ActualWeight, BilledZone, ActualZone, TotalBilledAmount
-                  </span>
-                </p>
-              </div>
+              </label>
+
               {isProcessing && (
                 <p className="text-xs text-red-400 animate-pulse flex items-center gap-2">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 animate-ping" />
@@ -349,19 +366,31 @@ export default function Home() {
             </CardHeader>
 
             {contractOpen && (
-              <CardContent className="pt-4 pb-4 space-y-0">
-                {/* Provider */}
-                <div className="flex items-center justify-between py-2 border-b border-zinc-800/60">
-                  <span className="text-[11px] text-zinc-500 uppercase tracking-wider">Provider</span>
-                  <span className="text-xs font-semibold text-zinc-200">{MOCK_CONTRACT.provider_name}</span>
+              <CardContent className="pt-3 pb-4 space-y-0">
+                {/* Provider selector tabs */}
+                <div className="flex flex-wrap gap-1.5 pb-3 border-b border-zinc-800/60">
+                  {(Object.keys(PROVIDER_CONTRACTS) as ProviderName[]).map((name) => (
+                    <button
+                      key={name}
+                      onClick={() => setSelectedProvider(name)}
+                      className="px-2.5 py-1 rounded-sm text-[10px] font-medium tracking-wide transition-all duration-150"
+                      style={
+                        selectedProvider === name
+                          ? { background: "rgba(220,38,38,0.2)", color: "rgb(252,165,165)", border: "1px solid rgba(220,38,38,0.45)" }
+                          : { background: "transparent", color: "rgb(82,82,91)", border: "1px solid rgba(63,63,70,0.6)" }
+                      }
+                    >
+                      {name}
+                    </button>
+                  ))}
                 </div>
 
                 {/* Zone rates */}
                 {(
                   [
-                    ["Zone A", MOCK_CONTRACT.zone_a_rate],
-                    ["Zone B", MOCK_CONTRACT.zone_b_rate],
-                    ["Zone C", MOCK_CONTRACT.zone_c_rate],
+                    ["Zone A", activeContract.zone_a_rate],
+                    ["Zone B", activeContract.zone_b_rate],
+                    ["Zone C", activeContract.zone_c_rate],
                   ] as [string, number][]
                 ).map(([label, rate]) => (
                   <div
@@ -380,7 +409,7 @@ export default function Home() {
                 <div className="flex items-center justify-between py-2 border-b border-zinc-800/60">
                   <span className="text-[11px] text-zinc-500 uppercase tracking-wider">COD Fee</span>
                   <span className="text-xs font-mono text-zinc-300">
-                    {MOCK_CONTRACT.cod_fee_percentage}
+                    {activeContract.cod_fee_percentage}
                     <span className="text-zinc-600">%</span>
                   </span>
                 </div>
@@ -389,7 +418,7 @@ export default function Home() {
                 <div className="flex items-center justify-between py-2">
                   <span className="text-[11px] text-zinc-500 uppercase tracking-wider">RTO Flat Fee</span>
                   <span className="text-xs font-mono text-zinc-300">
-                    ₹{MOCK_CONTRACT.rto_flat_fee}
+                    ₹{activeContract.rto_flat_fee}
                     <span className="text-zinc-600"> flat</span>
                   </span>
                 </div>
@@ -429,30 +458,38 @@ export default function Home() {
 
           {/* Glowing recovery card */}
           <Card
-            className="border shadow-none transition-all duration-500"
+            className="border shadow-none transition-all duration-500 overflow-hidden"
             style={{
               background: hasOvercharge
-                ? "radial-gradient(ellipse 130% 130% at 50% 110%, rgba(220,38,38,0.2) 0%, #09090b 58%)"
+                ? "radial-gradient(ellipse 130% 130% at 50% 110%, rgba(220,38,38,0.22) 0%, #09090b 58%)"
                 : "#09090b",
-              borderColor: hasOvercharge ? "rgba(220,38,38,0.45)" : "rgba(39,39,42,0.7)",
+              borderColor: hasOvercharge ? "rgba(220,38,38,0.5)" : "rgba(39,39,42,0.7)",
               boxShadow: hasOvercharge
-                ? "0 0 36px rgba(220,38,38,0.18), inset 0 0 24px rgba(220,38,38,0.06)"
+                ? "0 0 48px rgba(220,38,38,0.22), inset 0 0 32px rgba(220,38,38,0.08)"
                 : "none",
             }}
           >
-            <CardContent className="pt-6 pb-5">
+            {/* Accent top-bar — visible only when overcharge exists */}
+            <div
+              className="h-0.5 w-full transition-opacity duration-500"
+              style={{
+                background: "linear-gradient(90deg, transparent, rgba(220,38,38,0.7) 50%, transparent)",
+                opacity: hasOvercharge ? 1 : 0,
+              }}
+            />
+            <CardContent className="pt-5 pb-5">
               <p className="text-[11px] text-zinc-500 uppercase tracking-widest mb-2">
                 Amount Recoverable
               </p>
               <p
-                className="text-4xl font-bold tabular-nums transition-colors duration-500"
+                className="text-5xl font-bold tabular-nums leading-none transition-colors duration-500"
                 style={{ color: hasOvercharge ? "rgb(248,113,113)" : "white" }}
               >
                 {analysisResults
                   ? `₹${analysisResults.totalOvercharge.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`
                   : "—"}
               </p>
-              <p className="text-[11px] text-zinc-600 mt-1.5">
+              <p className="text-[11px] text-zinc-600 mt-2">
                 {analysisResults
                   ? `${analysisResults.discrepancies.length} discrepancies flagged`
                   : "overcharged by provider"}
@@ -620,8 +657,9 @@ export default function Home() {
                 onClick={handleExport}
                 disabled={analysisResults.discrepancies.length === 0}
                 size="sm"
-                className="bg-red-800 hover:bg-red-700 disabled:opacity-30
-                           text-white border-0 text-xs tracking-wide h-8 px-4"
+                className="disabled:opacity-30 text-white border-0 text-xs tracking-wide h-8 px-4
+                           hover:opacity-90 transition-opacity"
+                style={{ backgroundColor: "#1F4D3F" }}
               >
                 Download Payout File
               </Button>
@@ -663,7 +701,8 @@ export default function Home() {
                       {analysisResults.discrepancies.map((d, i) => (
                         <TableRow
                           key={i}
-                          className="border-zinc-800/40 hover:bg-zinc-900/50 transition-colors"
+                          className="border-zinc-800/40 hover:bg-zinc-900/60 transition-colors"
+                          style={{ backgroundColor: i % 2 === 0 ? "transparent" : "rgba(39,39,42,0.25)" }}
                         >
                           <TableCell className="pl-6 font-mono text-xs text-zinc-300 py-3">
                             {d.awb_number}

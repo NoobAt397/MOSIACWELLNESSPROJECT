@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" })
 
-    const prompt = `You are a data engineer for an Indian D2C brand. Map the following raw CSV headers to our standard schema. Our standard keys are: AWB, OrderType, BilledWeight, ActualWeight, BilledZone, ActualZone, TotalBilledAmount. Return ONLY a strict JSON object (no markdown, no backticks) where the keys are the RAW headers and the values are the STANDARD keys. If a raw header doesn't match anything, map it to null.
+    const prompt = `You are a data engineer for an Indian D2C brand. Map the following raw CSV headers to our standard schema. Our standard keys are: AWB, OrderType, BilledWeight, ActualWeight, BilledZone, ActualZone, TotalBilledAmount, ShipmentDate, OriginPincode, DestPincode. Return ONLY a strict JSON object (no markdown, no backticks) where the keys are the RAW headers and the values are the STANDARD keys. If a raw header doesn't match anything, map it to null.
 
 Raw headers:
 ${JSON.stringify(rawHeaders)}`
