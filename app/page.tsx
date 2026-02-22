@@ -23,6 +23,7 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart"
 import { analyzeInvoice, type AnalysisResult } from "@/lib/billing-engine"
+import { useToast } from "@/hooks/use-toast"
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -46,10 +47,16 @@ const CHART_PALETTE = [
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
+  const { toast } = useToast()
   const [analysisResults, setAnalysisResults] = useState<AnalysisResult | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
   const [fileName, setFileName] = useState<string | null>(null)
   const [contractOpen, setContractOpen] = useState(true)
+
+  const REQUIRED_COLUMNS = [
+    "AWB", "OrderType", "BilledWeight", "ActualWeight",
+    "BilledZone", "ActualZone", "TotalBilledAmount",
+  ] as const
 
   // ── Derived chart data ──────────────────────────────────────────────────────
   // Aggregate total overcharge (₹) per issue type.
@@ -101,8 +108,96 @@ export default function Home() {
       header: true,
       dynamicTyping: true,
       skipEmptyLines: true,
-      complete: (results) => {
-        const analysis = analyzeInvoice(results.data as any[], MOCK_CONTRACT)
+      complete: async (results) => {
+        const rows = results.data as Record<string, unknown>[]
+
+        if (rows.length === 0) {
+          setIsProcessing(false)
+          return
+        }
+
+        const firstRow = rows[0] ?? {}
+        const rawHeaders = Object.keys(firstRow)
+
+        // ── Fast path: headers already match the standard schema ──
+        const alreadyStandard = REQUIRED_COLUMNS.every((col) => col in firstRow)
+
+        let normalizedRows: Record<string, unknown>[]
+
+        if (alreadyStandard) {
+          normalizedRows = rows
+        } else {
+          // ── AI normalisation path ──
+          const { id, update } = toast({
+            title: "AI analyzing CSV column structure…",
+            description: `Detected ${rawHeaders.length} column${rawHeaders.length !== 1 ? "s" : ""}: ${rawHeaders.join(", ")}`,
+          })
+
+          let mapping: Record<string, string | null>
+          try {
+            const res = await fetch("/api/map-headers", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ rawHeaders }),
+            })
+
+            if (!res.ok) throw new Error("mapping API error")
+            mapping = await res.json()
+          } catch {
+            update({
+              id,
+              variant: "destructive",
+              title: "Column Mapping Failed",
+              description:
+                "AI could not map the CSV headers. Please rename columns to the standard format.",
+            })
+            setAnalysisResults(null)
+            setFileName(null)
+            setIsProcessing(false)
+            return
+          }
+
+          // Remap each row's keys to standard names
+          normalizedRows = rows.map((row) => {
+            const normalized: Record<string, unknown> = {}
+            for (const [rawKey, value] of Object.entries(row)) {
+              const standardKey = mapping[rawKey]
+              if (standardKey) normalized[standardKey] = value
+            }
+            return normalized
+          })
+
+          // Drop rows where the two critical fields are absent (prevents NaNs)
+          normalizedRows = normalizedRows.filter(
+            (row) => row.AWB != null && row.TotalBilledAmount != null
+          )
+
+          update({
+            id,
+            title: "Columns mapped. Auditing invoice…",
+            description: `${normalizedRows.length} valid rows ready for analysis.`,
+          })
+        }
+
+        // ── Post-normalisation guard ──
+        const missingColumns = REQUIRED_COLUMNS.filter(
+          (col) => !(col in (normalizedRows[0] ?? {}))
+        )
+
+        if (missingColumns.length > 0 || normalizedRows.length === 0) {
+          toast({
+            variant: "destructive",
+            title: "Invalid CSV Format",
+            description:
+              "Please upload a standard Logistics Invoice with the correct columns.",
+          })
+          setAnalysisResults(null)
+          setFileName(null)
+          setIsProcessing(false)
+          return
+        }
+
+        const analysis = analyzeInvoice(normalizedRows as any[], MOCK_CONTRACT)
         setAnalysisResults(analysis)
         setIsProcessing(false)
       },
