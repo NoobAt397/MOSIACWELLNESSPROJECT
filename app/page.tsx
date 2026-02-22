@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useMemo } from "react"
-import { ChevronDown, UploadCloud } from "lucide-react"
+import { ChevronDown, UploadCloud, FileText, X } from "lucide-react"
 import Papa from "papaparse"
 import { PieChart, Pie, Cell, Label } from "recharts"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -22,19 +22,24 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
-import { analyzeInvoice, type AnalysisResult } from "@/lib/billing-engine"
+import { analyzeInvoice, type AnalysisResult, type ContractRules, type Discrepancy } from "@/lib/billing-engine"
 import { useToast } from "@/hooks/use-toast"
+import EvidenceModal from "@/components/EvidenceModal"
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const PROVIDER_CONTRACTS = {
-  Delhivery:       { provider_name: "Delhivery",     zone_a_rate: 40, zone_b_rate: 55, zone_c_rate: 75, cod_fee_percentage: 1.5, rto_flat_fee: 30 },
-  BlueDart:        { provider_name: "BlueDart",       zone_a_rate: 55, zone_b_rate: 72, zone_c_rate: 95, cod_fee_percentage: 2.0, rto_flat_fee: 45 },
-  "Ecom Express":  { provider_name: "Ecom Express",  zone_a_rate: 35, zone_b_rate: 48, zone_c_rate: 65, cod_fee_percentage: 1.2, rto_flat_fee: 25 },
-  Shadowfax:       { provider_name: "Shadowfax",      zone_a_rate: 30, zone_b_rate: 42, zone_c_rate: 58, cod_fee_percentage: 1.0, rto_flat_fee: 20 },
+  Delhivery:       { provider_name: "Delhivery",    zone_a_rate: 40, zone_b_rate: 55, zone_c_rate: 75, cod_fee_percentage: 1.5, rto_flat_fee: 30, fuel_surcharge_percentage: 15, docket_charge: 30, gst_percentage: 18 },
+  BlueDart:        { provider_name: "BlueDart",      zone_a_rate: 55, zone_b_rate: 72, zone_c_rate: 95, cod_fee_percentage: 2.0, rto_flat_fee: 45, fuel_surcharge_percentage: 18, docket_charge: 50, gst_percentage: 18 },
+  "Ecom Express":  { provider_name: "Ecom Express", zone_a_rate: 35, zone_b_rate: 48, zone_c_rate: 65, cod_fee_percentage: 1.2, rto_flat_fee: 25, fuel_surcharge_percentage: 12, docket_charge: 25, gst_percentage: 18 },
+  Shadowfax:       { provider_name: "Shadowfax",     zone_a_rate: 30, zone_b_rate: 42, zone_c_rate: 58, cod_fee_percentage: 1.0, rto_flat_fee: 20, fuel_surcharge_percentage: 10, docket_charge: 20, gst_percentage: 18 },
 } as const
 
 type ProviderName = keyof typeof PROVIDER_CONTRACTS
+
+// Full contract shape used throughout the component.
+// Merges ContractRules (for billing engine) with a display name.
+type FullContract = ContractRules & { provider_name: string }
 
 const CHART_PALETTE = [
   "#ef4444", // red-500
@@ -49,11 +54,19 @@ const CHART_PALETTE = [
 export default function Home() {
   const { toast } = useToast()
   const [selectedProvider, setSelectedProvider] = useState<ProviderName>("Delhivery")
-  const activeContract = PROVIDER_CONTRACTS[selectedProvider]
+  const [extractedContract, setExtractedContract] = useState<FullContract | null>(null)
+  const [isExtracting, setIsExtracting] = useState(false)
+  // Active contract: prefer AI-extracted over preset
+  const activeContract: FullContract =
+    extractedContract ?? (PROVIDER_CONTRACTS[selectedProvider] as FullContract)
   const [analysisResults, setAnalysisResults] = useState<AnalysisResult | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
   const [fileName, setFileName] = useState<string | null>(null)
   const [contractOpen, setContractOpen] = useState(true)
+  const [selectedDiscrepancy, setSelectedDiscrepancy] = useState<Discrepancy | null>(null)
+  const [currentPage, setCurrentPage] = useState(0)
+
+  const PAGE_SIZE = 50
 
   const REQUIRED_COLUMNS = [
     "AWB", "OrderType", "BilledWeight", "ActualWeight",
@@ -201,6 +214,7 @@ export default function Home() {
 
         const analysis = analyzeInvoice(normalizedRows as any[], activeContract)
         setAnalysisResults(analysis)
+        setCurrentPage(0)
         setIsProcessing(false)
       },
       error: () => setIsProcessing(false),
@@ -228,9 +242,59 @@ export default function Home() {
     URL.revokeObjectURL(url)
   }
 
-  // ── Derived booleans ────────────────────────────────────────────────────────
+  async function handlePdfUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    // Reset so the same file can be re-uploaded after clearing
+    e.target.value = ""
+
+    setIsExtracting(true)
+
+    const { id, update } = toast({
+      title: "Reading PDF contract…",
+      description: `Sending ${file.name} to Gemini for analysis`,
+    })
+
+    try {
+      const form = new FormData()
+      form.append("file", file)
+
+      const res = await fetch("/api/extract-contract", {
+        method: "POST",
+        body: form,
+      })
+
+      if (!res.ok) throw new Error("extraction failed")
+
+      const data: FullContract = await res.json()
+      setExtractedContract(data)
+
+      update({
+        id,
+        title: "Contract Extracted",
+        description: `${data.provider_name ?? "Custom"} rates loaded. Re-run your CSV to apply.`,
+      })
+    } catch {
+      update({
+        id,
+        variant: "destructive",
+        title: "Extraction Failed",
+        description: "Could not parse the PDF. Ensure it is a valid courier contract.",
+      })
+    } finally {
+      setIsExtracting(false)
+    }
+  }
+
+  // ── Derived booleans + pagination ──────────────────────────────────────────
 
   const hasOvercharge = (analysisResults?.totalOvercharge ?? 0) > 0
+  const totalDiscrepancies = analysisResults?.discrepancies.length ?? 0
+  const totalPages = Math.ceil(totalDiscrepancies / PAGE_SIZE)
+  const pagedDiscrepancies = analysisResults?.discrepancies.slice(
+    currentPage * PAGE_SIZE,
+    (currentPage + 1) * PAGE_SIZE
+  ) ?? []
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -302,10 +366,12 @@ export default function Home() {
                       : "Click to upload Invoice CSV"}
                   </p>
                   <p className="text-[11px] text-zinc-600">
-                    Columns:&nbsp;
-                    <span className="font-mono">
-                      AWB, OrderType, BilledWeight, ActualWeight, BilledZone, ActualZone, TotalBilledAmount
-                    </span>
+                    Required:&nbsp;
+                    <span className="font-mono">AWB, OrderType, BilledWeight, ActualWeight, BilledZone, ActualZone, TotalBilledAmount</span>
+                  </p>
+                  <p className="text-[11px] text-zinc-700 mt-0.5">
+                    Optional:&nbsp;
+                    <span className="font-mono">Length, Width, Height (cm), OriginPincode, DestPincode</span>
                   </p>
                 </div>
                 <Input
@@ -341,20 +407,32 @@ export default function Home() {
                   <CardTitle className="text-[11px] text-zinc-500 font-semibold uppercase tracking-widest">
                     Active Contract Rules
                   </CardTitle>
-                  {/* AI badge */}
+                  {/* AI badge — changes colour based on extraction state */}
                   <span
-                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-sm border text-[10px] font-medium tracking-wide"
-                    style={{
-                      background: "rgba(124,58,237,0.12)",
-                      borderColor: "rgba(124,58,237,0.35)",
-                      color: "rgb(167,139,250)",
-                    }}
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-sm border text-[10px] font-medium tracking-wide transition-all duration-300"
+                    style={
+                      isExtracting
+                        ? { background: "rgba(217,119,6,0.12)", borderColor: "rgba(217,119,6,0.35)", color: "rgb(252,211,77)" }
+                        : extractedContract
+                        ? { background: "rgba(22,163,74,0.12)", borderColor: "rgba(22,163,74,0.35)", color: "rgb(134,239,172)" }
+                        : { background: "rgba(124,58,237,0.12)", borderColor: "rgba(124,58,237,0.35)", color: "rgb(167,139,250)" }
+                    }
                   >
                     <span
-                      className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: "rgb(167,139,250)", boxShadow: "0 0 6px rgba(167,139,250,0.6)" }}
+                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isExtracting ? "animate-ping" : ""}`}
+                      style={{
+                        backgroundColor: isExtracting
+                          ? "rgb(252,211,77)"
+                          : extractedContract
+                          ? "rgb(134,239,172)"
+                          : "rgb(167,139,250)",
+                      }}
                     />
-                    AI Extracted from PDF
+                    {isExtracting
+                      ? "Extracting PDF…"
+                      : extractedContract
+                      ? "✓ AI Extracted"
+                      : "AI Extracted from PDF"}
                   </span>
                 </div>
                 <ChevronDown
@@ -367,22 +445,62 @@ export default function Home() {
 
             {contractOpen && (
               <CardContent className="pt-3 pb-4 space-y-0">
-                {/* Provider selector tabs */}
-                <div className="flex flex-wrap gap-1.5 pb-3 border-b border-zinc-800/60">
-                  {(Object.keys(PROVIDER_CONTRACTS) as ProviderName[]).map((name) => (
-                    <button
-                      key={name}
-                      onClick={() => setSelectedProvider(name)}
-                      className="px-2.5 py-1 rounded-sm text-[10px] font-medium tracking-wide transition-all duration-150"
-                      style={
-                        selectedProvider === name
-                          ? { background: "rgba(220,38,38,0.2)", color: "rgb(252,165,165)", border: "1px solid rgba(220,38,38,0.45)" }
-                          : { background: "transparent", color: "rgb(82,82,91)", border: "1px solid rgba(63,63,70,0.6)" }
-                      }
-                    >
-                      {name}
-                    </button>
-                  ))}
+                {/* Provider selector — preset tabs or extracted contract info */}
+                <div className="pb-3 border-b border-zinc-800/60 space-y-2">
+                  {extractedContract ? (
+                    /* Extracted contract header */
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-green-400 font-medium">
+                        {extractedContract.provider_name}
+                      </span>
+                      <button
+                        onClick={() => setExtractedContract(null)}
+                        className="flex items-center gap-1 text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
+                      >
+                        <X size={10} />
+                        Reset to preset
+                      </button>
+                    </div>
+                  ) : (
+                    /* Preset provider pill tabs */
+                    <div className="flex flex-wrap gap-1.5">
+                      {(Object.keys(PROVIDER_CONTRACTS) as ProviderName[]).map((name) => (
+                        <button
+                          key={name}
+                          onClick={() => setSelectedProvider(name)}
+                          className="px-2.5 py-1 rounded-sm text-[10px] font-medium tracking-wide transition-all duration-150"
+                          style={
+                            selectedProvider === name
+                              ? { background: "rgba(220,38,38,0.2)", color: "rgb(252,165,165)", border: "1px solid rgba(220,38,38,0.45)" }
+                              : { background: "transparent", color: "rgb(82,82,91)", border: "1px solid rgba(63,63,70,0.6)" }
+                          }
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* PDF upload trigger */}
+                  <label
+                    className={`flex items-center justify-center gap-2 w-full py-1.5 rounded-sm border border-dashed cursor-pointer transition-all duration-200 ${
+                      isExtracting
+                        ? "border-amber-800/40 text-amber-600 cursor-not-allowed"
+                        : "border-zinc-700/60 text-zinc-600 hover:border-zinc-500 hover:text-zinc-400"
+                    }`}
+                  >
+                    <FileText size={11} />
+                    <span className="text-[10px] font-medium tracking-wide">
+                      {isExtracting ? "Extracting…" : "Upload PDF Contract"}
+                    </span>
+                    <input
+                      type="file"
+                      accept="application/pdf"
+                      disabled={isExtracting}
+                      onChange={handlePdfUpload}
+                      className="hidden"
+                    />
+                  </label>
                 </div>
 
                 {/* Zone rates */}
@@ -414,12 +532,39 @@ export default function Home() {
                   </span>
                 </div>
 
+                {/* Fuel surcharge */}
+                <div className="flex items-center justify-between py-2 border-b border-zinc-800/60">
+                  <span className="text-[11px] text-zinc-500 uppercase tracking-wider">Fuel Surcharge</span>
+                  <span className="text-xs font-mono text-zinc-300">
+                    {activeContract.fuel_surcharge_percentage}
+                    <span className="text-zinc-600">%</span>
+                  </span>
+                </div>
+
+                {/* Docket charge */}
+                <div className="flex items-center justify-between py-2 border-b border-zinc-800/60">
+                  <span className="text-[11px] text-zinc-500 uppercase tracking-wider">Docket Charge</span>
+                  <span className="text-xs font-mono text-zinc-300">
+                    ₹{activeContract.docket_charge}
+                    <span className="text-zinc-600"> flat</span>
+                  </span>
+                </div>
+
+                {/* GST */}
+                <div className="flex items-center justify-between py-2 border-b border-zinc-800/60">
+                  <span className="text-[11px] text-zinc-500 uppercase tracking-wider">GST</span>
+                  <span className="text-xs font-mono text-zinc-300">
+                    {activeContract.gst_percentage}
+                    <span className="text-zinc-600">% (statutory)</span>
+                  </span>
+                </div>
+
                 {/* RTO */}
                 <div className="flex items-center justify-between py-2">
                   <span className="text-[11px] text-zinc-500 uppercase tracking-wider">RTO Flat Fee</span>
                   <span className="text-xs font-mono text-zinc-300">
                     ₹{activeContract.rto_flat_fee}
-                    <span className="text-zinc-600"> flat</span>
+                    <span className="text-zinc-600"> + GST</span>
                   </span>
                 </div>
               </CardContent>
@@ -692,19 +837,21 @@ export default function Home() {
                         <TableHead className="text-[11px] text-zinc-500 uppercase tracking-wider font-semibold text-right">
                           Correct (₹)
                         </TableHead>
-                        <TableHead className="pr-6 text-[11px] text-zinc-500 uppercase tracking-wider font-semibold text-right">
+                        <TableHead className="text-[11px] text-zinc-500 uppercase tracking-wider font-semibold text-right">
                           Difference (₹)
                         </TableHead>
+                        <TableHead className="pr-4 w-20" />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {analysisResults.discrepancies.map((d, i) => (
+                      {pagedDiscrepancies.map((d, i) => (
                         <TableRow
                           key={i}
-                          className="border-zinc-800/40 hover:bg-zinc-900/60 transition-colors"
+                          onClick={() => setSelectedDiscrepancy(d)}
+                          className="border-zinc-800/40 hover:bg-zinc-900/60 transition-colors cursor-pointer group"
                           style={{ backgroundColor: i % 2 === 0 ? "transparent" : "rgba(39,39,42,0.25)" }}
                         >
-                          <TableCell className="pl-6 font-mono text-xs text-zinc-300 py-3">
+                          <TableCell className="pl-6 font-mono text-xs text-zinc-300 py-3 group-hover:text-white transition-colors">
                             {d.awb_number}
                           </TableCell>
                           <TableCell className="py-3">
@@ -721,10 +868,47 @@ export default function Home() {
                           <TableCell className="pr-6 text-right font-semibold text-red-400 text-sm tabular-nums py-3">
                             +{d.difference.toFixed(2)}
                           </TableCell>
+                          <TableCell className="pr-4 py-3 text-right">
+                            <span className="text-[10px] text-zinc-700 group-hover:text-zinc-500 transition-colors font-medium tracking-wide uppercase">
+                              Evidence →
+                            </span>
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
                   </Table>
+                </div>
+              )}
+
+              {/* ── Pagination ── */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between px-6 py-3 border-t border-zinc-800/60">
+                  <span className="text-[11px] text-zinc-600">
+                    Showing {currentPage * PAGE_SIZE + 1}–
+                    {Math.min((currentPage + 1) * PAGE_SIZE, totalDiscrepancies)} of{" "}
+                    {totalDiscrepancies}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      disabled={currentPage === 0}
+                      onClick={() => setCurrentPage((p) => p - 1)}
+                      className="px-3 py-1 rounded-sm text-[11px] font-medium transition-all disabled:opacity-30"
+                      style={{ background: "rgba(39,39,42,0.6)", color: "rgb(161,161,170)", border: "1px solid rgba(63,63,70,0.6)" }}
+                    >
+                      ← Prev
+                    </button>
+                    <span className="text-[11px] text-zinc-600 tabular-nums">
+                      {currentPage + 1} / {totalPages}
+                    </span>
+                    <button
+                      disabled={currentPage >= totalPages - 1}
+                      onClick={() => setCurrentPage((p) => p + 1)}
+                      className="px-3 py-1 rounded-sm text-[11px] font-medium transition-all disabled:opacity-30"
+                      style={{ background: "rgba(39,39,42,0.6)", color: "rgb(161,161,170)", border: "1px solid rgba(63,63,70,0.6)" }}
+                    >
+                      Next →
+                    </button>
+                  </div>
                 </div>
               )}
             </CardContent>
@@ -749,6 +933,15 @@ export default function Home() {
           Mosaic Wellness · Logistics Intelligence Platform
         </p>
       </div>
+
+      {/* ── Evidence Modal (portal-style fixed overlay) ── */}
+      {selectedDiscrepancy && (
+        <EvidenceModal
+          discrepancy={selectedDiscrepancy}
+          gstPercentage={activeContract.gst_percentage}
+          onClose={() => setSelectedDiscrepancy(null)}
+        />
+      )}
     </div>
   )
 }
