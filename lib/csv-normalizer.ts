@@ -23,7 +23,9 @@
  */
 export function normalizeWeight(raw: unknown): number {
   if (raw == null || raw === "") return 0
-  if (typeof raw === "number") return raw
+  if (typeof raw === "number") {
+    return raw > 200 ? raw / 1000 : raw
+  }
 
   const str = String(raw).toLowerCase().trim()
 
@@ -36,6 +38,27 @@ export function normalizeWeight(raw: unknown): number {
   if (kgMatch) return parseFloat(kgMatch[1])
 
   // plain numeric string
+  const n = parseFloat(str)
+  return isNaN(n) ? 0 : n
+}
+
+// ── Dimension ─────────────────────────────────────────────────────────────────
+
+/**
+ * Normalises a dimension value (Length, Width, Height) to a plain number in cm.
+ *
+ *   number   → returned as-is
+ *   "42"     → 42
+ *   "42cm"   → 42
+ *   "42 cm"  → 42
+ *   other    → 0
+ */
+export function normalizeDimension(raw: unknown): number {
+  if (raw == null || raw === "") return 0
+  if (typeof raw === "number") return raw
+  const str = String(raw).toLowerCase().trim()
+  const match = str.match(/^(\d+\.?\d*)\s*cm?$/)
+  if (match) return parseFloat(match[1])
   const n = parseFloat(str)
   return isNaN(n) ? 0 : n
 }
@@ -144,9 +167,9 @@ export function normalizeRows(
     if ("TotalBilledAmount" in out) out.TotalBilledAmount = normalizeAmount(out.TotalBilledAmount)
     if ("CODAmount" in out)        out.CODAmount        = normalizeAmount(out.CODAmount)
 
-    if ("Length" in out) out.Length = normalizeWeight(out.Length)  // same logic: numeric
-    if ("Width"  in out) out.Width  = normalizeWeight(out.Width)
-    if ("Height" in out) out.Height = normalizeWeight(out.Height)
+    if ("Length" in out) out.Length = normalizeDimension(out.Length)
+    if ("Width"  in out) out.Width  = normalizeDimension(out.Width)
+    if ("Height" in out) out.Height = normalizeDimension(out.Height)
 
     // Pincodes — replace with validated string or delete key entirely
     if ("OriginPincode" in out) {

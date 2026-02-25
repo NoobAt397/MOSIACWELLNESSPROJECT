@@ -3,8 +3,8 @@ export interface CsvRow {
   OrderType: "Prepaid" | "COD" | "RTO" | "Return"
   BilledWeight: number
   ActualWeight: number
-  BilledZone: "A" | "B" | "C"
-  ActualZone: "A" | "B" | "C"
+  BilledZone: "A" | "B" | "C" | "D" | "E"
+  ActualZone: "A" | "B" | "C" | "D" | "E"
   TotalBilledAmount: number
   // Optional: dimensional weight inputs (cm)
   Length?: number
@@ -19,6 +19,10 @@ export interface ContractRules {
   zone_a_rate: number
   zone_b_rate: number
   zone_c_rate: number
+  /** Difficult terrain / remote areas (NE states, islands). Optional — if absent, flagged for manual review. */
+  zone_d_rate?: number
+  /** Extreme remote / special areas (Ladakh, deep islands). Optional — if absent, flagged for manual review. */
+  zone_e_rate?: number
   cod_fee_percentage: number
   rto_flat_fee: number
   fuel_surcharge_percentage: number
@@ -129,22 +133,57 @@ const METRO_PREFIXES = new Set([
 ])
 
 /**
+ * Pincode prefixes (3-digit) for Zone E — extreme remote / special areas.
+ * Exact assignment varies by courier; used as reasonable defaults.
+ */
+const ZONE_E_PREFIXES = new Set([
+  "791", // specific NE remote (Arunachal border)
+  "195", // Ladakh
+])
+
+/**
+ * Pincode prefixes (3-digit) for Zone D — difficult terrain / remote areas.
+ * Exact assignment varies by courier; used as reasonable defaults.
+ */
+const ZONE_D_PREFIXES = new Set([
+  "790", "792", "793", "794", "795", "796", "797", "798", "799", // NE states
+  "744", // Andaman & Nicobar Islands
+  "682", // Lakshadweep
+  "193", "194", // Jammu & Kashmir remote
+])
+
+/**
  * Derives the shipping zone from origin and destination pincodes.
- * Zone A: same metro hub · Zone B: same state · Zone C: cross-state
+ * Zone E: extreme remote (Ladakh, specific NE border)
+ * Zone D: difficult terrain (NE states, islands, remote J&K)
+ * Zone A: same metro hub
+ * Zone B: same state
+ * Zone C: cross-state
+ *
+ * Note: Zone D/E determined by destination prefix only.
+ * Exact assignment varies by courier — verify against courier contract.
  */
 export function determineZone(
   originPin: string,
   destPin: string
-): "A" | "B" | "C" {
+): "A" | "B" | "C" | "D" | "E" {
   const o = String(originPin).replace(/\s/g, "")
   const d = String(destPin).replace(/\s/g, "")
-  const o3 = o.substring(0, 3)
   const d3 = d.substring(0, 3)
+  const o3 = o.substring(0, 3)
   const o2 = o.substring(0, 2)
   const d2 = d.substring(0, 2)
 
+  // Zone E: extreme remote — check destination first
+  if (ZONE_E_PREFIXES.has(d3)) return "E"
+
+  // Zone D: difficult terrain / remote — check destination first
+  if (ZONE_D_PREFIXES.has(d3)) return "D"
+
+  // Zone A: same metro hub
   if (METRO_PREFIXES.has(o3) && o3 === d3) return "A"
 
+  // Zone B: same state
   const originState = PIN_STATE[o2]
   const destState   = PIN_STATE[d2]
   if (originState && destState && originState === destState) return "B"
@@ -177,6 +216,8 @@ const ZONE_RATE_MAP: Record<string, keyof ContractRules> = {
   A: "zone_a_rate",
   B: "zone_b_rate",
   C: "zone_c_rate",
+  D: "zone_d_rate",
+  E: "zone_e_rate",
 }
 
 /**
@@ -238,7 +279,7 @@ export function analyzeInvoice(
     )
 
     // ── Zone determination ──────────────────────────────────────────────────
-    let pincodeDerivedZone: "A" | "B" | "C" | null = null
+    let pincodeDerivedZone: "A" | "B" | "C" | "D" | "E" | null = null
     if (
       originPin && destPin &&
       String(originPin).replace(/\s/g, "").length >= 6 &&
@@ -250,7 +291,19 @@ export function analyzeInvoice(
 
     // ── Rate lookup ─────────────────────────────────────────────────────────
     const rateKey  = ZONE_RATE_MAP[effectiveZone]
-    const baseRate: number = rateKey ? (contractRules[rateKey] as number) : 0
+    const contractRate = rateKey ? (contractRules[rateKey] as number | undefined) : undefined
+    // Zone D/E present in data but not configured in contract → flag for manual review, skip rate calc
+    if (contractRate === undefined && (effectiveZone === "D" || effectiveZone === "E")) {
+      discrepancies.push({
+        awb_number:     awb,
+        issue_type:     `Zone Rate Unavailable (Zone ${effectiveZone}) — manual review required`,
+        billed_amount:  totalBilledAmount,
+        correct_amount: totalBilledAmount,
+        difference:     0,
+      })
+      continue
+    }
+    const baseRate: number = contractRate ?? 0
 
     // ── Expected total with all surcharges ──────────────────────────────────
     const isRTO = orderType === "RTO" || orderType === "Return"
@@ -268,7 +321,8 @@ export function analyzeInvoice(
       preGST       = rtoFee
       expectedTotal = rtoFee + gst
     } else {
-      baseFreight   = baseRate * chargeableWeight
+      const slabs   = Math.max(1, Math.ceil(chargeableWeight / 0.5))
+      baseFreight   = baseRate * slabs
       fuelSurcharge = baseFreight * (contractRules.fuel_surcharge_percentage / 100)
       docketCharge  = contractRules.docket_charge
       codFee        =
@@ -280,9 +334,9 @@ export function analyzeInvoice(
       expectedTotal = preGST + gst
     }
 
-    // Only flag rows where overcharge exceeds ₹1
+    // Only flag rows where overcharge exceeds ₹2
     const difference = totalBilledAmount - expectedTotal
-    if (difference <= 1) continue
+    if (difference <= 2) continue
 
     // ── Issue type labels ───────────────────────────────────────────────────
     const reasons: string[] = []
@@ -301,21 +355,13 @@ export function analyzeInvoice(
     if (weightOvercharge)  reasons.push("Weight Overcharge")
     if (weightDiscrepancy) reasons.push("Weight Discrepancy")
 
-    if (orderType === "Prepaid") {
-      const potentialCod =
-        (baseFreight + fuelSurcharge) * (contractRules.cod_fee_percentage / 100)
-      if (Math.abs(difference - potentialCod * (1 + contractRules.gst_percentage / 100)) < 15) {
-        reasons.push("Invalid COD Charge")
-      }
-    }
-
     if (isRTO) {
       const expectedRTO = contractRules.rto_flat_fee * (1 + contractRules.gst_percentage / 100)
       if (totalBilledAmount > expectedRTO + 1) reasons.push("RTO Overcharge")
     }
 
     if (
-      difference > 10 &&
+      difference > 50 &&
       !reasons.some((r) => r.startsWith("Zone Mismatch") || r === "Weight Overcharge")
     ) {
       reasons.push("Non-contracted Surcharge")

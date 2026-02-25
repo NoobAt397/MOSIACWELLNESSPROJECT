@@ -55,10 +55,42 @@ import UnknownProviderBanner, { type UnknownProvider } from "@/components/Unknow
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const PROVIDER_CONTRACTS = {
-  Delhivery:       { provider_name: "Delhivery",    zone_a_rate: 40, zone_b_rate: 55, zone_c_rate: 75, cod_fee_percentage: 1.5, rto_flat_fee: 30, fuel_surcharge_percentage: 15, docket_charge: 30, gst_percentage: 18 },
-  BlueDart:        { provider_name: "BlueDart",      zone_a_rate: 55, zone_b_rate: 72, zone_c_rate: 95, cod_fee_percentage: 2.0, rto_flat_fee: 45, fuel_surcharge_percentage: 18, docket_charge: 50, gst_percentage: 18 },
-  "Ecom Express":  { provider_name: "Ecom Express", zone_a_rate: 35, zone_b_rate: 48, zone_c_rate: 65, cod_fee_percentage: 1.2, rto_flat_fee: 25, fuel_surcharge_percentage: 12, docket_charge: 25, gst_percentage: 18 },
-  Shadowfax:       { provider_name: "Shadowfax",     zone_a_rate: 30, zone_b_rate: 42, zone_c_rate: 58, cod_fee_percentage: 1.0, rto_flat_fee: 20, fuel_surcharge_percentage: 10, docket_charge: 20, gst_percentage: 18 },
+  Delhivery: {
+    provider_name: "Delhivery",
+    // Zone A/B/C: Publicly documented D2C enterprise rates
+    zone_a_rate: 40, zone_b_rate: 55, zone_c_rate: 75,
+    // Zone D/E: Indicative defaults based on rate progression.
+    // Actual rates vary by contract — upload PDF to override.
+    zone_d_rate: 95, zone_e_rate: 120,
+    cod_fee_percentage: 1.5, rto_flat_fee: 30, fuel_surcharge_percentage: 15, docket_charge: 30, gst_percentage: 18,
+  },
+  BlueDart: {
+    provider_name: "BlueDart",
+    // Zone A/B/C: Publicly documented D2C enterprise rates
+    zone_a_rate: 55, zone_b_rate: 72, zone_c_rate: 95,
+    // Zone D/E: Indicative defaults based on rate progression.
+    // Actual rates vary by contract — upload PDF to override.
+    zone_d_rate: 108, zone_e_rate: 138,
+    cod_fee_percentage: 2.0, rto_flat_fee: 45, fuel_surcharge_percentage: 18, docket_charge: 50, gst_percentage: 18,
+  },
+  "Ecom Express": {
+    provider_name: "Ecom Express",
+    // Zone A/B/C: Publicly documented D2C enterprise rates
+    zone_a_rate: 35, zone_b_rate: 48, zone_c_rate: 65,
+    // Zone D/E: Indicative defaults based on rate progression.
+    // Actual rates vary by contract — upload PDF to override.
+    zone_d_rate: 88, zone_e_rate: 112,
+    cod_fee_percentage: 1.2, rto_flat_fee: 25, fuel_surcharge_percentage: 12, docket_charge: 25, gst_percentage: 18,
+  },
+  Shadowfax: {
+    provider_name: "Shadowfax",
+    // Zone A/B/C: Publicly documented D2C enterprise rates
+    zone_a_rate: 30, zone_b_rate: 42, zone_c_rate: 58,
+    // Zone D/E: Indicative defaults based on rate progression.
+    // Actual rates vary by contract — upload PDF to override.
+    zone_d_rate: 82, zone_e_rate: 105,
+    cod_fee_percentage: 1.0, rto_flat_fee: 20, fuel_surcharge_percentage: 10, docket_charge: 20, gst_percentage: 18,
+  },
 } as const
 
 type ProviderName = keyof typeof PROVIDER_CONTRACTS
@@ -180,9 +212,11 @@ export default function Home() {
     const now = Date.now()
     const newWeightPoints: WeightDataPoint[] = []
     const newUnknownWarnings: UnknownProvider[] = []
+    const newAuditRecords: AuditRecord[] = []
     let analysis: AnalysisResult
 
     const hasProviderColumn = "Provider" in first
+    const fileHint = fileNameHint ?? fileName ?? "unknown"
 
     if (hasProviderColumn) {
       // ── Multi-provider path ──────────────────────────────────────────────────
@@ -204,6 +238,15 @@ export default function Home() {
         totalOvercharge += result.totalOvercharge
         totalRows       += result.totalRows
         totalBilled     += result.totalBilled
+
+        // Save individual audit record for this provider
+        const providerRecord = buildAuditRecord({
+          analysisResult: result,
+          providerName:   canonicalKey,
+          fileName:       fileHint,
+        })
+        saveAuditRecord(providerRecord)
+        newAuditRecords.push(providerRecord)
 
         // Collect weight pairs for regression
         for (const row of rows) {
@@ -237,6 +280,15 @@ export default function Home() {
         totalOvercharge += result.totalOvercharge
         totalRows       += result.totalRows
         totalBilled     += result.totalBilled
+
+        // Save individual audit record for this unknown provider
+        const providerRecord = buildAuditRecord({
+          analysisResult: result,
+          providerName:   rawName,
+          fileName:       fileHint,
+        })
+        saveAuditRecord(providerRecord)
+        newAuditRecords.push(providerRecord)
       }
 
       analysis = {
@@ -264,6 +316,15 @@ export default function Home() {
           })
         }
       }
+
+      // Save single audit record for this provider
+      const record = buildAuditRecord({
+        analysisResult: analysis,
+        providerName:   provider,
+        fileName:       fileHint,
+      })
+      saveAuditRecord(record)
+      newAuditRecords.push(record)
     }
 
     if (newWeightPoints.length > 0) {
@@ -277,17 +338,8 @@ export default function Home() {
     setCurrentPage(0)
     setIsProcessing(false)
 
-    // Persist this audit run to analytics history
-    const providerLabel = hasProviderColumn
-      ? [...new Set(mappedRows.map((r) => String(r["Provider"] ?? "")).filter(Boolean))].join(", ") || "Multi-provider"
-      : activeContract.provider_name
-    const record = buildAuditRecord({
-      analysisResult: analysis,
-      providerName:   providerLabel,
-      fileName:       fileNameHint ?? fileName ?? "unknown",
-    })
-    saveAuditRecord(record)
-    setAuditHistory((prev) => [...prev, record])
+    // Persist all individual audit records to analytics history
+    setAuditHistory((prev) => [...prev, ...newAuditRecords])
   }
 
   // ── Called when user confirms mapping in the modal ────────────────────────
@@ -900,22 +952,71 @@ export default function Home() {
                 {/* Zone rates */}
                 {(
                   [
-                    ["Zone A", activeContract.zone_a_rate],
-                    ["Zone B", activeContract.zone_b_rate],
-                    ["Zone C", activeContract.zone_c_rate],
-                  ] as [string, number][]
-                ).map(([label, rate]) => (
+                    ["Zone A", activeContract.zone_a_rate, null, false],
+                    ["Zone B", activeContract.zone_b_rate, null, false],
+                    ["Zone C", activeContract.zone_c_rate, null, false],
+                    ["Zone D", activeContract.zone_d_rate, "Remote", true],
+                    ["Zone E", activeContract.zone_e_rate, "Extreme Remote", true],
+                  ] as [string, number | undefined, string | null, boolean][]
+                ).map(([label, rate, badge, isRemote]) => (
                   <div
                     key={label}
-                    className="flex items-center justify-between py-2 border-b border-zinc-800/60"
+                    className={`flex items-center justify-between py-2 border-b ${
+                      isRemote && !extractedContract
+                        ? "border-amber-900/40 border-dashed"
+                        : "border-zinc-800/60"
+                    }`}
                   >
-                    <span className="text-[11px] text-zinc-500 uppercase tracking-wider">{label}</span>
-                    <span className="text-xs font-mono text-zinc-300">
-                      ₹{rate}
-                      <span className="text-zinc-600"> / 500g</span>
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {isRemote && (
+                        <span
+                          className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                          style={{
+                            backgroundColor: extractedContract
+                              ? "rgb(134,239,172)"
+                              : "rgb(251,191,36)",
+                          }}
+                        />
+                      )}
+                      <span className="text-[11px] text-zinc-500 uppercase tracking-wider">{label}</span>
+                      {badge && (
+                        <span className="text-[9px] text-zinc-700 border border-zinc-800 rounded px-1 py-px tracking-wide">
+                          {badge}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      {rate !== undefined ? (
+                        <span className="text-xs font-mono text-zinc-300">
+                          ₹{rate}
+                          <span className="text-zinc-600"> / 500g</span>
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-zinc-700 italic">not configured</span>
+                      )}
+                      {isRemote && rate !== undefined && (
+                        <span
+                          className="text-[9px] px-1 py-px rounded border"
+                          style={
+                            extractedContract
+                              ? { color: "rgb(134,239,172)", borderColor: "rgba(22,163,74,0.35)", background: "rgba(22,163,74,0.08)" }
+                              : { color: "rgb(251,191,36)", borderColor: "rgba(217,119,6,0.35)", background: "rgba(217,119,6,0.08)" }
+                          }
+                        >
+                          {extractedContract ? "from contract" : "estimated"}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 ))}
+
+                {/* Zone D/E disclaimer */}
+                <p
+                  className="pt-2 pb-1 text-[10px] italic leading-relaxed"
+                  style={{ color: "rgb(160,115,35)" }}
+                >
+                  ⚠ Zone D/E rates are indicative defaults. Upload your courier contract PDF to use your actual negotiated rates.
+                </p>
 
                 {/* COD fee */}
                 <div className="flex items-center justify-between py-2 border-b border-zinc-800/60">
