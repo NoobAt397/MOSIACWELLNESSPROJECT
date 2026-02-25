@@ -41,8 +41,8 @@ function DarkTooltip({ active, payload }: any) {
         color: "#e4e4e7",
       }}
     >
-      <div>Declared: {(d.x / 1000).toFixed(3)} kg</div>
-      <div>Billed:   {(d.y / 1000).toFixed(3)} kg</div>
+      <div>Declared: {d.x.toFixed(3)} kg</div>
+      <div>Billed:   {d.y.toFixed(3)} kg</div>
     </div>
   )
 }
@@ -140,25 +140,29 @@ function ProviderRegressionCard({ provider, points }: ProviderCardProps) {
   const result = runRegression(points)
   const displayPoints = sampleForDisplay(points)
 
-  // Build scatter data: { x: declaredWeight_g, y: billedWeight_g }
+  // Convert to kg for display — regression math is done on stored gram values,
+  // so we only convert here at the chart data-building layer.
   const scatterData = displayPoints.map((p) => ({
-    x: p.declaredWeight_g,
-    y: p.billedWeight_g,
+    x: p.declaredWeight_g / 1000,
+    y: p.billedWeight_g  / 1000,
   }))
 
-  // Build regression line data: two endpoints spanning the x range
-  const xs = displayPoints.map((p) => p.declaredWeight_g)
+  // Span from the already-converted kg values
+  const xs   = scatterData.map((p) => p.x)
   const xMin = Math.min(...xs)
   const xMax = Math.max(...xs)
 
+  // Regression equation was fitted in grams: y_g = slope * x_g + intercept
+  // In kg:  y_kg = slope * x_kg + (intercept / 1000)
+  const interceptKg = result ? result.intercept / 1000 : 0
   const regressionLineData = result
     ? [
-        { x: xMin, y: result.slope * xMin + result.intercept },
-        { x: xMax, y: result.slope * xMax + result.intercept },
+        { x: xMin, y: result.slope * xMin + interceptKg },
+        { x: xMax, y: result.slope * xMax + interceptKg },
       ]
     : []
 
-  // Perfect billing line: y = x
+  // Perfect billing line in kg: y = x
   const perfectLineData = [
     { x: xMin, y: xMin },
     { x: xMax, y: xMax },
@@ -209,7 +213,7 @@ function ProviderRegressionCard({ provider, points }: ProviderCardProps) {
             <Chip label="Slope (m)" value={result.slope.toFixed(4)} />
             <Chip
               label="Intercept (b)"
-              value={`${result.intercept >= 0 ? "+" : ""}${result.intercept.toFixed(1)}g`}
+              value={`${result.intercept / 1000 >= 0 ? "+" : ""}${(result.intercept / 1000).toFixed(3)} kg`}
             />
             <Chip label="R²" value={result.r2.toFixed(4)} />
             <Chip
@@ -231,10 +235,10 @@ function ProviderRegressionCard({ provider, points }: ProviderCardProps) {
       {hasEnoughData && (
         <div className="space-y-1">
           <p className="text-[10px] text-zinc-600 uppercase tracking-wider font-medium">
-            Declared vs Billed Weight (grams)
+            Declared vs Billed Weight (kg)
           </p>
-          <ResponsiveContainer width="100%" height={240}>
-            <ComposedChart margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+          <ResponsiveContainer width="100%" height={260}>
+            <ComposedChart margin={{ top: 8, right: 8, bottom: 28, left: 8 }}>
               <CartesianGrid
                 strokeDasharray="3 3"
                 stroke="rgba(255,255,255,0.04)"
@@ -245,7 +249,8 @@ function ProviderRegressionCard({ provider, points }: ProviderCardProps) {
                 name="Declared"
                 domain={["auto", "auto"]}
                 tick={{ fontSize: 10, fill: "#52525b" }}
-                tickFormatter={(v: number) => `${(v / 1000).toFixed(1)}kg`}
+                tickFormatter={(v: number) => `${v.toFixed(1)}`}
+                label={{ value: "Declared Weight (kg)", position: "insideBottom", offset: -14, fontSize: 9, fill: "#52525b" }}
               />
               <YAxis
                 dataKey="y"
@@ -253,8 +258,9 @@ function ProviderRegressionCard({ provider, points }: ProviderCardProps) {
                 name="Billed"
                 domain={["auto", "auto"]}
                 tick={{ fontSize: 10, fill: "#52525b" }}
-                tickFormatter={(v: number) => `${(v / 1000).toFixed(1)}kg`}
-                width={52}
+                tickFormatter={(v: number) => `${v.toFixed(1)}`}
+                label={{ value: "Billed Weight (kg)", angle: -90, position: "insideLeft", dx: 12, dy: 58, fontSize: 9, fill: "#52525b" }}
+                width={44}
               />
               <Tooltip content={<DarkTooltip />} />
               <Legend

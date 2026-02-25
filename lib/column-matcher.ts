@@ -79,6 +79,11 @@ const VARIATIONS: Record<string, string[]> = {
     "shipment date", "date", "booking date", "ship date", "dispatch date",
     "created date", "invoice date", "order date", "manifest date",
   ],
+  Provider: [
+    "provider", "courier", "carrier", "logistics", "logistics partner",
+    "shipping partner", "courier partner", "delivery partner",
+    "courier name", "carrier name", "shipping company", "courier service",
+  ],
 }
 
 export const REQUIRED_CANONICAL = [
@@ -90,6 +95,7 @@ export const OPTIONAL_CANONICAL = [
   "Length", "Width", "Height",
   "OriginPincode", "DestPincode",
   "CODAmount", "ShipmentDate",
+  "Provider",
 ] as const
 
 export const ALL_CANONICAL = [...REQUIRED_CANONICAL, ...OPTIONAL_CANONICAL]

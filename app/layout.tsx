@@ -3,8 +3,8 @@ import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 
 export const metadata: Metadata = {
-  title: "D2C Logistics Billing Checker",
-  description: "Verify and audit D2C logistics billing discrepancies",
+  title: "Scrutix — Logistics Invoice Auditing",
+  description: "Automated logistics invoice auditing for D2C brands",
 };
 
 export default function RootLayout({

@@ -22,7 +22,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
-import { analyzeInvoice, type AnalysisResult, type ContractRules, type Discrepancy } from "@/lib/billing-engine"
+import { analyzeInvoice, partialAuditRows, type AnalysisResult, type ContractRules, type Discrepancy } from "@/lib/billing-engine"
 import { detectColumns, REQUIRED_CANONICAL, type DetectionResult } from "@/lib/column-matcher"
 import { findHeaderRow, normalizeRows, applyMapping } from "@/lib/csv-normalizer"
 import { useToast } from "@/hooks/use-toast"
@@ -34,7 +34,6 @@ import {
   buildAuditRecord,
   saveAuditRecord,
   loadAuditHistory,
-  clearAuditHistory,
   type AuditRecord,
 } from "@/lib/audit-history"
 import AnalyticsDashboard from "@/components/AnalyticsDashboard"
@@ -45,6 +44,13 @@ import {
   clearWeightData,
   type WeightDataPoint,
 } from "@/lib/weight-regression"
+import { groupRowsByProvider } from "@/lib/provider-classifier"
+import {
+  saveCustomContract,
+  loadCustomContracts,
+  clearCustomContracts,
+} from "@/lib/custom-contracts"
+import UnknownProviderBanner, { type UnknownProvider } from "@/components/UnknownProviderBanner"
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -104,11 +110,15 @@ export default function Home() {
   const [weightData, setWeightData] = useState<WeightDataPoint[]>([])
   // Full normalized rows from most recent audit (needed for Excel export Sheet 2 & 3)
   const [lastMappedRows, setLastMappedRows] = useState<Record<string, unknown>[]>([])
+  // Multi-provider state
+  const [unknownProviderWarnings, setUnknownProviderWarnings] = useState<UnknownProvider[]>([])
+  const [customContracts, setCustomContracts] = useState<Record<string, FullContract>>({})
 
   // Load history from localStorage on client mount
   useEffect(() => {
     setAuditHistory(loadAuditHistory())
     setWeightData(loadWeightData())
+    setCustomContracts(loadCustomContracts())
   }, [])
 
   const PAGE_SIZE = 50
@@ -167,44 +177,117 @@ export default function Home() {
     }
     setAnalysisWarnings(warnings)
 
-    const analysis = analyzeInvoice(mappedRows as any[], activeContract)
+    const now = Date.now()
+    const newWeightPoints: WeightDataPoint[] = []
+    const newUnknownWarnings: UnknownProvider[] = []
+    let analysis: AnalysisResult
+
+    const hasProviderColumn = "Provider" in first
+
+    if (hasProviderColumn) {
+      // ── Multi-provider path ──────────────────────────────────────────────────
+      const { known, unknown } = groupRowsByProvider(mappedRows)
+
+      const allDiscrepancies: Discrepancy[] = []
+      let totalOvercharge = 0
+      let totalRows = 0
+      let totalBilled = 0
+
+      // Audit known providers against their own rate card
+      for (const [canonicalKey, rows] of known.entries()) {
+        const contract: FullContract =
+          customContracts[canonicalKey.toLowerCase()] ??
+          (PROVIDER_CONTRACTS[canonicalKey as ProviderName] as FullContract)
+
+        const result = analyzeInvoice(rows as any[], contract)
+        allDiscrepancies.push(...result.discrepancies)
+        totalOvercharge += result.totalOvercharge
+        totalRows       += result.totalRows
+        totalBilled     += result.totalBilled
+
+        // Collect weight pairs for regression
+        for (const row of rows) {
+          const declared = Number(row["ActualWeight"] ?? 0)
+          const billed   = Number(row["BilledWeight"]  ?? 0)
+          const awb      = String(row["AWB"] ?? "")
+          if (declared > 0 && billed > 0 && awb) {
+            newWeightPoints.push({
+              provider: canonicalKey,
+              awb,
+              declaredWeight_g: Math.round(declared * 1000),
+              billedWeight_g:   Math.round(billed   * 1000),
+              date: now,
+            })
+          }
+        }
+      }
+
+      // Partial audit unknown providers (duplicate/weight/zone only)
+      for (const [rawName, rows] of unknown.entries()) {
+        const customKey      = rawName.toLowerCase().trim()
+        const customContract = customContracts[customKey]
+        let result: AnalysisResult
+        if (customContract) {
+          result = analyzeInvoice(rows as any[], customContract)
+        } else {
+          result = partialAuditRows(rows as any[])
+          newUnknownWarnings.push({ name: rawName, rowCount: rows.length })
+        }
+        allDiscrepancies.push(...result.discrepancies)
+        totalOvercharge += result.totalOvercharge
+        totalRows       += result.totalRows
+        totalBilled     += result.totalBilled
+      }
+
+      analysis = {
+        discrepancies:  allDiscrepancies,
+        totalOvercharge: Number(totalOvercharge.toFixed(2)),
+        totalRows,
+        totalBilled:     Number(totalBilled.toFixed(2)),
+      }
+    } else {
+      // ── Single-provider path (no Provider column) ────────────────────────────
+      analysis = analyzeInvoice(mappedRows as any[], activeContract)
+
+      const provider = activeContract.provider_name
+      for (const row of mappedRows) {
+        const declared = Number(row["ActualWeight"] ?? 0)
+        const billed   = Number(row["BilledWeight"]  ?? 0)
+        const awb      = String(row["AWB"] ?? "")
+        if (declared > 0 && billed > 0 && awb) {
+          newWeightPoints.push({
+            provider,
+            awb,
+            declaredWeight_g: Math.round(declared * 1000),
+            billedWeight_g:   Math.round(billed   * 1000),
+            date: now,
+          })
+        }
+      }
+    }
+
+    if (newWeightPoints.length > 0) {
+      storeWeightData(newWeightPoints)
+      setWeightData((prev) => [...prev, ...newWeightPoints])
+    }
+
     setAnalysisResults(analysis)
+    setUnknownProviderWarnings(newUnknownWarnings)
     setLastMappedRows(mappedRows)
     setCurrentPage(0)
     setIsProcessing(false)
 
     // Persist this audit run to analytics history
+    const providerLabel = hasProviderColumn
+      ? [...new Set(mappedRows.map((r) => String(r["Provider"] ?? "")).filter(Boolean))].join(", ") || "Multi-provider"
+      : activeContract.provider_name
     const record = buildAuditRecord({
       analysisResult: analysis,
-      providerName:   activeContract.provider_name,
+      providerName:   providerLabel,
       fileName:       fileNameHint ?? fileName ?? "unknown",
     })
     saveAuditRecord(record)
     setAuditHistory((prev) => [...prev, record])
-
-    // ── Weight regression data collection ─────────────────────────────────────
-    // Canonical fields from normalizeRows are in kg; convert to grams for storage
-    const provider = activeContract.provider_name
-    const now = Date.now()
-    const newWeightPoints: WeightDataPoint[] = []
-    for (const row of mappedRows) {
-      const declared = Number(row["ActualWeight"] ?? 0)
-      const billed   = Number(row["BilledWeight"]  ?? 0)
-      const awb      = String(row["AWB"] ?? "")
-      if (declared > 0 && billed > 0 && awb) {
-        newWeightPoints.push({
-          provider,
-          awb,
-          declaredWeight_g: Math.round(declared * 1000),
-          billedWeight_g:   Math.round(billed   * 1000),
-          date: now,
-        })
-      }
-    }
-    if (newWeightPoints.length > 0) {
-      storeWeightData(newWeightPoints)
-      setWeightData((prev) => [...prev, ...newWeightPoints])
-    }
   }
 
   // ── Called when user confirms mapping in the modal ────────────────────────
@@ -235,6 +318,58 @@ export default function Home() {
     runAnalysis(finalRows)
   }
 
+  // ── Upload PDF contract for an unknown provider ───────────────────────────
+  async function handleUnknownProviderContractUpload(rawName: string, file: File) {
+    setIsExtracting(true)
+    const { id, update } = toast({
+      title: `Reading contract for ${rawName}…`,
+      description: `Extracting rates from ${file.name}`,
+    })
+
+    try {
+      const form = new FormData()
+      form.append("file", file)
+
+      const res = await fetch("/api/extract-contract", {
+        method: "POST",
+        body: form,
+      })
+
+      if (!res.ok) throw new Error("extraction failed")
+
+      const data: FullContract = await res.json()
+      // Override provider_name to match the raw name from the CSV
+      const contract: FullContract = { ...data, provider_name: rawName }
+
+      saveCustomContract(rawName, contract)
+      setCustomContracts((prev) => ({
+        ...prev,
+        [rawName.toLowerCase().trim()]: contract,
+      }))
+      // Mark this provider's warning as having a contract loaded
+      setUnknownProviderWarnings((prev) =>
+        prev.map((w) =>
+          w.name === rawName ? { ...w, hasCustomContract: true } : w
+        )
+      )
+
+      update({
+        id,
+        title: "Contract Extracted",
+        description: `Rates for ${rawName} loaded. Re-run your CSV to apply the full audit.`,
+      })
+    } catch {
+      update({
+        id,
+        variant: "destructive",
+        title: "Extraction Failed",
+        description: "Could not parse the PDF. Ensure it is a valid courier contract.",
+      })
+    } finally {
+      setIsExtracting(false)
+    }
+  }
+
   // ── File upload entry point ────────────────────────────────────────────────
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -252,6 +387,7 @@ export default function Home() {
     setIsProcessing(true)
     setAnalysisResults(null)
     setAnalysisWarnings([])
+    setUnknownProviderWarnings([])
 
     try {
       // ── 1. Parse file to raw string arrays (CSV or XLSX) ──────────────────
@@ -424,6 +560,7 @@ export default function Home() {
     setIsPdfExtracting(true)
     setAnalysisResults(null)
     setAnalysisWarnings([])
+    setUnknownProviderWarnings([])
 
     const { id, update } = toast({
       title: "Reading PDF invoice…",
@@ -558,11 +695,11 @@ export default function Home() {
               }}
             />
             <h1 className="text-3xl font-bold tracking-tight text-white">
-              Mosaic Logistics Command Center
+              Scrutix
             </h1>
           </div>
           <p className="text-zinc-500 text-sm pl-5">
-            Contract-based invoice auditing for Indian D2C logistics
+            Automated logistics invoice auditing for D2C brands
             &nbsp;·&nbsp;
             <span className="text-zinc-600">Demo contract: {activeContract.provider_name}</span>
           </p>
@@ -1187,6 +1324,14 @@ export default function Home() {
           </div>
         )}
 
+        {/* ── Unknown provider banner ── */}
+        {analysisResults && unknownProviderWarnings.length > 0 && (
+          <UnknownProviderBanner
+            providers={unknownProviderWarnings}
+            onContractUpload={handleUnknownProviderContractUpload}
+          />
+        )}
+
         {/* ── Empty state ── */}
         {!analysisResults && !isProcessing && !isPdfExtracting && !pendingDetection && !pendingPdfPreview && (
           <div className="flex flex-col items-center justify-center py-28 space-y-4">
@@ -1230,15 +1375,46 @@ export default function Home() {
                 clearWeightData()
                 setWeightData([])
                 setAuditHistory([])
+                clearCustomContracts()
+                setCustomContracts({})
               }}
             />
           </>
         )}
 
         {/* ── Footer ── */}
-        <p className="text-center text-zinc-800 text-xs pb-4 tracking-wide">
-          Mosaic Wellness · Logistics Intelligence Platform
-        </p>
+        <footer className="flex flex-col items-center gap-1.5 pb-6 pt-2">
+          <p className="text-zinc-800 text-xs tracking-wide text-center">
+            Scrutix · Built for Mosaic Wellness Fellowship Builder Round 2025
+          </p>
+          <div className="flex items-center gap-3">
+            <span className="text-zinc-800 text-xs">Built by Aditya Ranjith</span>
+            <a
+              href="https://www.linkedin.com/in/aditya-ranjith-80b54a25b/"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="LinkedIn"
+              className="text-zinc-700 hover:text-zinc-400 transition-colors duration-200"
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" aria-hidden>
+                <path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z"/>
+                <rect x="2" y="9" width="4" height="12"/>
+                <circle cx="4" cy="4" r="2"/>
+              </svg>
+            </a>
+            <a
+              href="https://github.com/NoobAt397/MOSIACWELLNESSPROJECT"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="GitHub"
+              className="text-zinc-700 hover:text-zinc-400 transition-colors duration-200"
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" aria-hidden>
+                <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"/>
+              </svg>
+            </a>
+          </div>
+        </footer>
       </div>
 
       {/* ── Evidence Modal ── */}

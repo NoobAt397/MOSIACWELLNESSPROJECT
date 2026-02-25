@@ -364,3 +364,76 @@ export function analyzeInvoice(
     totalBilled:     Number(totalBilled.toFixed(2)),
   }
 }
+
+/**
+ * Partial audit for rows from unknown / unrecognised providers.
+ *
+ * Runs only:
+ *   1. Duplicate charge detection  (full billed amount is the difference)
+ *   2. Weight overcharge           (billed > actual × 1.01)
+ *   3. Zone mismatch               (when BilledZone ≠ ActualZone)
+ *
+ * Rate-based calculations are skipped — no rate card is available.
+ * For qualitative flags (weight / zone) difference = 0 because we cannot
+ * compute a correct amount without contract rates.
+ */
+export function partialAuditRows(csvData: any[]): AnalysisResult {
+  const discrepancies: Discrepancy[] = []
+  let totalBilled = 0
+  const seenAWBs = new Set<string>()
+
+  for (const row of csvData) {
+    const awb:               string = String(row.AWB ?? "")
+    const billedWeight:      number = Number(row.BilledWeight ?? 0)
+    const actualWeight:      number = Number(row.ActualWeight ?? 0)
+    const billedZone:        string = String(row.BilledZone ?? "")
+    const actualZone:        string = String(row.ActualZone ?? "")
+    const totalBilledAmount: number = Number(row.TotalBilledAmount ?? 0)
+
+    totalBilled += totalBilledAmount
+
+    // ── Duplicate charge ─────────────────────────────────────────────────
+    if (seenAWBs.has(awb)) {
+      discrepancies.push({
+        awb_number:    awb,
+        issue_type:    "Duplicate Charge",
+        billed_amount: totalBilledAmount,
+        correct_amount: 0,
+        difference:    Number(totalBilledAmount.toFixed(2)),
+      })
+      continue
+    }
+    seenAWBs.add(awb)
+
+    const reasons: string[] = []
+
+    // ── Weight overcharge (>1% tolerance) ───────────────────────────────
+    if (actualWeight > 0 && billedWeight > actualWeight * 1.01) {
+      reasons.push("Weight Overcharge")
+    }
+
+    // ── Zone mismatch ────────────────────────────────────────────────────
+    if (billedZone && actualZone && billedZone !== actualZone) {
+      reasons.push("Zone Mismatch")
+    }
+
+    if (reasons.length > 0) {
+      discrepancies.push({
+        awb_number:    awb,
+        issue_type:    `Unknown Provider — ${reasons.join(", ")}`,
+        billed_amount: totalBilledAmount,
+        correct_amount: totalBilledAmount, // can't calculate without rate card
+        difference:    0,
+      })
+    }
+  }
+
+  const totalOvercharge = discrepancies.reduce((sum, d) => sum + d.difference, 0)
+
+  return {
+    discrepancies,
+    totalOvercharge: Number(totalOvercharge.toFixed(2)),
+    totalRows:       csvData.length,
+    totalBilled:     Number(totalBilled.toFixed(2)),
+  }
+}
