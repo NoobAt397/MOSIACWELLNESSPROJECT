@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useMemo, useEffect } from "react"
-import Image from "next/image"
 import { ChevronDown, UploadCloud, FileText, X, Download } from "lucide-react"
 import Papa from "papaparse"
 import { PieChart, Pie, Cell, Label } from "recharts"
@@ -747,13 +746,15 @@ export default function Home() {
                 boxShadow: "0 0 12px rgba(239,68,68,0.5)",
               }}
             />
-            <Image
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
               src="/scrutixxp-logo.png"
-              alt="Scrutix-XP"
-              width={200}
-              height={48}
-              style={{ height: "48px", width: "auto", minWidth: "120px", filter: "brightness(0) invert(1)" }}
-              priority
+              alt="Scrutix"
+              style={{
+                height: "58px",
+                width: "auto",
+                filter: "brightness(0) invert(1)",
+              }}
             />
           </div>
           <p className="text-zinc-500 text-sm pl-5">
