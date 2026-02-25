@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useMemo, useEffect } from "react"
+import Image from "next/image"
 import { ChevronDown, UploadCloud, FileText, X, Download } from "lucide-react"
 import Papa from "papaparse"
 import { PieChart, Pie, Cell, Label } from "recharts"
@@ -746,9 +747,14 @@ export default function Home() {
                 boxShadow: "0 0 12px rgba(239,68,68,0.5)",
               }}
             />
-            <h1 className="text-3xl font-bold tracking-tight text-white">
-              Scrutix-XP
-            </h1>
+            <Image
+              src="/scrutixxp-logo.png"
+              alt="Scrutix-XP"
+              width={0}
+              height={32}
+              style={{ width: "auto", height: "32px", filter: "brightness(0) invert(1)" }}
+              priority
+            />
           </div>
           <p className="text-zinc-500 text-sm pl-5">
             Automated logistics invoice auditing for D2C brands
