@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
     const base64 = Buffer.from(bytes).toString("base64")
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" })
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" })
 
     const prompt = `You are an AI trained to extract logistics contract rates for Indian D2C e-commerce brands.
 Read this courier service agreement PDF and extract the exact pricing details.
